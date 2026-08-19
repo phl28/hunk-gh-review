@@ -590,13 +590,30 @@ export default function (hunk: HunkExtensionAPI) {
   hunk.on("changeset_loaded", (_payload, ctx) => void fetchThreads(ctx.cwd, (m) => ctx.notify(m)));
   hunk.on("session_reload", (_payload, ctx) => void fetchThreads(ctx.cwd, (m) => ctx.notify(m)));
 
-  hunk.registerPane({
-    id: "threads",
-    title: "PR threads",
-    placement: "right",
-    width: { preferred: 44, min: 28 },
-    component: PrThreadsPane,
-  });
+  // Placement is configurable because Hunk omits panes that don't fit:
+  // a side pane needs (terminal width - minReviewWidth - divider) >= its min
+  // columns, which fails on narrow terminals; a bottom pane only needs rows.
+  const placementRaw = typeof hunk.config.placement === "string" ? hunk.config.placement : "right";
+  const placement = (["left", "right", "top", "bottom"] as const).includes(placementRaw as "left")
+    ? (placementRaw as "left" | "right" | "top" | "bottom")
+    : "right";
+  hunk.registerPane(
+    placement === "top" || placement === "bottom"
+      ? {
+          id: "threads",
+          title: "PR threads",
+          placement,
+          height: { preferred: 12, min: 5 },
+          component: PrThreadsPane,
+        }
+      : {
+          id: "threads",
+          title: "PR threads",
+          placement,
+          width: { preferred: 44, min: 22 },
+          component: PrThreadsPane,
+        },
+  );
 
   hunk.registerCommand({ id: "submit", title: "Submit notes as GitHub PR review", key: "S" }, (ctx) =>
     submitReview(ctx, collected),

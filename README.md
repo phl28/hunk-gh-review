@@ -47,7 +47,8 @@ Use one install source or the other — two sources providing the same extension
 - `R` replies to the active thread — the one last clicked, or the one under the keyboard-mode cursor. While the mode is active, unhandled keys pass through (so `R`, `c`, `/` etc. keep working) and `esc` exits host-side.
 - Notes are read from the live session via `hunk session comment list` (authoritative, sees deletions); the `note_created`/`note_edited` event stream is a fallback for when the session daemon is unreachable.
 - Rebind keys in hunk's config: `[keybindings]` with `"gh-review.submit"`, `"gh-review.threads"`, `"gh-review.reply"` mapped to your chords.
-- Extension config table (`[extension.gh-review]`) is currently unused.
+- Pane placement is configurable via `[extension.gh-review]` in hunk's config: `placement = "right"` (default), `"left"`, `"top"`, or `"bottom"`.
+- **Narrow terminals:** hunk responsively omits panes that don't fit — a side pane needs the terminal width minus the review's minimum width to leave at least its `min` columns, and the built-in files sidebar claims its share first. If `T` opens nothing visible, use `placement = "bottom"` (it only needs 5 rows) or widen the terminal.
 
 ## Develop
 
