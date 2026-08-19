@@ -28,7 +28,8 @@
  * are kept as a fallback when the session daemon is unreachable. GitHub
  * calls go through `gh`, so auth is whatever `gh auth status` says.
  */
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import type {
   ExtensionCommandContext,
   ExtensionPaneProps,
@@ -219,11 +220,13 @@ type ThreadsState = {
   threads: Thread[];
   /** Comments dropped because they sit on outdated diff positions. */
   skippedOutdated: number;
-  /** Thread root id last clicked in the pane; the reply command targets it. */
+  /** Thread root id last clicked or key-navigated to; the reply command targets it. */
   activeThreadId: number | null;
+  /** True while the `threads` keyboard mode owns j/k navigation. */
+  modeActive: boolean;
 };
 
-let snapshot: ThreadsState = { phase: "idle", threads: [], skippedOutdated: 0, activeThreadId: null };
+let snapshot: ThreadsState = { phase: "idle", threads: [], skippedOutdated: 0, activeThreadId: null, modeActive: false };
 const listeners = new Set<() => void>();
 
 function setThreadsState(update: Partial<ThreadsState>) {
@@ -264,6 +267,18 @@ function groupThreads(comments: GhComment[]): { threads: Thread[]; skippedOutdat
   }
   threads.sort((a, b) => a.root.created_at.localeCompare(b.root.created_at));
   return { threads, skippedOutdated: comments.length - usable.length };
+}
+
+/** Move the active thread. No-op unless threads are loaded; clamps at the ends. */
+function moveActiveThread(delta: 1 | -1 | "first" | "last") {
+  if (snapshot.phase !== "ready" || snapshot.threads.length === 0) return;
+  const ids = snapshot.threads.map((t) => t.root.id);
+  const cur = snapshot.activeThreadId == null ? -1 : ids.indexOf(snapshot.activeThreadId);
+  let next: number;
+  if (delta === "first") next = 0;
+  else if (delta === "last") next = ids.length - 1;
+  else next = Math.min(ids.length - 1, Math.max(0, (cur < 0 ? (delta === 1 ? -1 : ids.length) : cur) + delta));
+  setThreadsState({ activeThreadId: ids[next] });
 }
 
 async function fetchThreads(cwd: string, notify?: (message: string) => void): Promise<void> {
@@ -343,13 +358,29 @@ function CommentRows({
 
 function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): ReactNode {
   const state = useThreadsSnapshot();
-  const navigateTo = (thread: Thread) => {
-    setThreadsState({ activeThreadId: thread.root.id });
+  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+
+  const reveal = (thread: Thread) => {
     const file = files.find((f) => f.path === thread.root.path);
     if (file && typeof thread.root.line === "number") {
       actions.revealLine(file.id, thread.root.side === "LEFT" ? "old" : "new", thread.root.line);
     }
   };
+  const navigateTo = (thread: Thread) => {
+    setThreadsState({ activeThreadId: thread.root.id });
+    reveal(thread);
+  };
+
+  // Keep the active thread visible, and while the threads keyboard mode owns
+  // input, follow it in the review stream too (that is the mode's whole job:
+  // modes cannot navigate directly, they only receive keys).
+  useEffect(() => {
+    if (state.phase !== "ready" || state.activeThreadId == null) return;
+    scrollRef.current?.scrollChildIntoView(`thread-${state.activeThreadId}`);
+    if (!state.modeActive) return;
+    const thread = state.threads.find((t) => t.root.id === state.activeThreadId);
+    if (thread) reveal(thread);
+  }, [state.activeThreadId, state.modeActive, state.phase]);
 
   let body: ReactNode;
   switch (state.phase) {
@@ -383,7 +414,7 @@ function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): Re
             const active = thread.root.id === state.activeThreadId;
             const rowBg = active ? theme.selectedHunk : theme.panel;
             return (
-              <box key={thread.root.id} style={{ flexDirection: "column", backgroundColor: rowBg }}>
+              <box key={thread.root.id} id={`thread-${thread.root.id}`} style={{ flexDirection: "column", backgroundColor: rowBg }}>
                 <text
                   content={` ${thread.root.path}:${thread.root.line}`}
                   style={{ fg: theme.text, bg: rowBg }}
@@ -411,6 +442,7 @@ function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): Re
 
   return (
     <scrollbox
+      ref={scrollRef}
       width="100%"
       height="100%"
       focused={false}
@@ -424,6 +456,9 @@ function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): Re
     >
       <box style={{ width: "100%", flexDirection: "column", backgroundColor: theme.panel }}>
         <text content=" PR threads" style={{ fg: theme.accent, bg: theme.panel }} />
+        {state.modeActive ? (
+          <text content=" j/k move · enter/esc back to diff" style={{ fg: theme.accentMuted, bg: theme.panel }} />
+        ) : null}
         {body}
       </box>
     </scrollbox>
@@ -567,7 +602,58 @@ export default function (hunk: HunkExtensionAPI) {
     submitReview(ctx, collected),
   );
 
-  hunk.registerCommand({ id: "threads", title: "Toggle PR threads pane", key: "T" }, (ctx) => ctx.panes.toggle("threads"));
+  // Keyboard mode: while active, j/k walk the thread list and the review
+  // stream follows (the pane's follow effect calls revealLine — modes receive
+  // keys but deliberately cannot navigate). Unhandled keys pass through, so
+  // R (reply), c (note), etc. keep working; esc exits host-side.
+  hunk.registerKeyboardMode({
+    id: "threads",
+    title: "PR threads",
+    onKey: (key) => {
+      switch (key.name) {
+        case "j":
+        case "down":
+          moveActiveThread(1);
+          return "handled";
+        case "k":
+        case "up":
+          moveActiveThread(-1);
+          return "handled";
+        case "g":
+          moveActiveThread("first");
+          return "handled";
+        case "G":
+          moveActiveThread("last");
+          return "handled";
+        case "q":
+        case "T":
+        case "return":
+        case "enter":
+          return "exit";
+        default:
+          return "pass";
+      }
+    },
+    onEnter: () => setThreadsState({ modeActive: true }),
+    onExit: () => setThreadsState({ modeActive: false }),
+  });
+
+  hunk.registerCommand({ id: "threads", title: "PR threads pane + keyboard mode", key: "T" }, (ctx) => {
+    const willOpen = !ctx.panes.isOpen("threads");
+    ctx.panes.toggle("threads");
+    if (!willOpen) {
+      if (ctx.keyboardModes.isActive("threads")) ctx.keyboardModes.exitMode();
+      return;
+    }
+    if (snapshot.phase === "ready" && snapshot.threads.length > 0) {
+      if (snapshot.activeThreadId == null) setThreadsState({ activeThreadId: snapshot.threads[0].root.id });
+      ctx.keyboardModes.enterMode("threads");
+    } else if (snapshot.phase === "ready") {
+      ctx.notify("gh-review: no review threads on this PR");
+    } else {
+      ctx.notify("gh-review: threads unavailable for this review", "warning");
+    }
+  });
 
   hunk.registerCommand({ id: "refresh-threads", title: "Refresh PR threads" }, async (ctx) => {
     await fetchThreads(ctx.cwd);

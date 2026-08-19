@@ -5,7 +5,7 @@ A [hunk](https://hunk.dev) extension that submits your review notes as a real Gi
 ## Usage
 
 1. Review a PR in hunk, telling hunk which PR the diff belongs to: `gh pr diff 123 | GH_PR_NUMBER=123 GH_PR_REPO=owner/repo hunk patch -` — or use a launcher that does this for you (`hpr` script, or the lazygit `v` custom command).
-2. Press **`T`** for the **PR threads pane**: every review thread on the PR, docked right — click a thread to jump the review stream to its exact line, then press **`R`** to reply to it. Threads refetch on reloads, after replies, and after you submit a review.
+2. Press **`T`** for the **PR threads pane**: every review thread on the PR, docked right. Opening it when threads exist also enters a keyboard mode — `j`/`k` (or arrows) walk the thread list, `g`/`G` jump to the ends, and the diff follows each selection to its exact line; `enter` or `esc` drops back to normal diff keys. Clicking a thread works too. Press **`R`** to reply to the active thread. Threads refetch on reloads, after replies, and after you submit a review.
 3. Press `c` on hunks/lines to leave notes as you go.
 4. Press **`S`** to submit:
    - resolves the target PR itself — `GH_PR_NUMBER`/`GH_PR_REPO` if the launcher set them, otherwise the checked-out branch's open PR — and asks you to **confirm** it (number + title). The number is never typed by hand: comments can only land on the PR whose diff is under review, since their line positions must match that PR's head diff. A set-but-empty `GH_PR_NUMBER` means the launcher already determined this review has no open PR, so the checked-out branch's PR is *not* used as a fallback (that would target the wrong PR)
@@ -44,7 +44,7 @@ Use one install source or the other — two sources providing the same extension
 
 - GitHub calls go through `gh`, so auth/scopes are whatever `gh auth status` says.
 - The threads pane shows review comments on the diff (`pulls/{N}/comments`). Comments sitting on outdated diff positions (e.g. after a force-push) are hidden, with the count shown in the header. PR *conversation* comments (not attached to code) are not shown.
-- `R` replies to the thread you last clicked in the pane (the pane highlights it). There is no in-pane keyboard navigation yet — thread selection is mouse-only.
+- `R` replies to the active thread — the one last clicked, or the one under the keyboard-mode cursor. While the mode is active, unhandled keys pass through (so `R`, `c`, `/` etc. keep working) and `esc` exits host-side.
 - Notes are read from the live session via `hunk session comment list` (authoritative, sees deletions); the `note_created`/`note_edited` event stream is a fallback for when the session daemon is unreachable.
 - Rebind keys in hunk's config: `[keybindings]` with `"gh-review.submit"`, `"gh-review.threads"`, `"gh-review.reply"` mapped to your chords.
 - Extension config table (`[extension.gh-review]`) is currently unused.

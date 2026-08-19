@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@opentui/core':
+        specifier: ^0.5.4
+        version: 0.5.4(typescript@5.9.3)(web-tree-sitter@0.25.10)
       '@opentui/react':
         specifier: ^0.5.4
         version: 0.5.4(react-devtools-core@7.0.1)(react@19.2.8)(typescript@5.9.3)(web-tree-sitter@0.25.10)(ws@8.21.3)

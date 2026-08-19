@@ -10,6 +10,7 @@
     ]
   },
   "devDependencies": {
+    "@opentui/core": "^0.5.4",
     "@opentui/react": "^0.5.4",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
