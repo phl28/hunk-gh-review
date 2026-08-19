@@ -4,13 +4,15 @@ A [hunk](https://hunk.dev) extension that submits your review notes as a real Gi
 
 ## Usage
 
-1. Review a PR in hunk, e.g. `gh pr diff 123 | hunk patch -` (or via the lazygit `v` custom command).
+1. Review a PR in hunk, telling hunk which PR the diff belongs to: `gh pr diff 123 | GH_PR_NUMBER=123 hunk patch -` — or use a launcher that does this for you (`hpr` shell function, or the lazygit `v` custom command).
 2. Press `c` on hunks/lines to leave notes as you go.
 3. Press **`S`** to submit:
-   - prompts for the PR number (pre-filled with the checked-out branch's PR when there is one)
+   - resolves the target PR itself — `GH_PR_NUMBER` if the launcher set it, otherwise the checked-out branch's open PR — and asks you to **confirm** it (number + title). The number is never typed by hand: comments can only land on the PR whose diff is under review, since their line positions must match that PR's head diff
    - asks for the review type (Comment / Approve / Request changes) and an optional top-level body
    - posts one atomic GitHub review containing every note as an inline comment (`new`-side notes → `RIGHT`, `old`-side → `LEFT`)
    - clears the submitted notes from the session so a second press doesn't double-post
+
+If there is no PR to attach notes to (e.g. reviewing uncommitted changes on a branch with no open PR), `S` fails with a clear message — GitHub reviews attach to PRs, not branches.
 
 The whole review is a single GitHub API call: if GitHub rejects any comment position, nothing is posted and the error is shown as a notification.
 

@@ -2,8 +2,15 @@
  * gh-review — submit hunk notes as a GitHub PR review.
  *
  * Press `S` (or rebind `gh-review.submit` in [keybindings]) to post every
- * note in the current review as an inline comment on a PR, then submit the
- * review as Comment / Approve / Request changes.
+ * note in the current review as inline comments on the PR under review,
+ * then submit the review as Comment / Approve / Request changes.
+ *
+ * The target PR is never typed by hand — it is the PR of the diff being
+ * reviewed: launchers that pipe a PR diff in (`gh pr diff 42 | hunk patch -`)
+ * set GH_PR_NUMBER, and working-tree reviews fall back to the checked-out
+ * branch's open PR. If neither yields a PR there is nowhere to post notes
+ * (GitHub reviews attach to PRs, not branches), so the command fails with a
+ * clear message instead of guessing.
  *
  * Notes are read from the live session via `hunk session comment list`
  * (authoritative — includes deletions); the note_created/note_edited events
@@ -75,6 +82,45 @@ async function fetchSessionNotes(cwd: string): Promise<Note[]> {
   return notes;
 }
 
+type TargetPr = { number: string; title: string };
+
+async function ghPrJson(args: string[], cwd: string): Promise<TargetPr> {
+  const out = await mustRun("gh", [...args, "--json", "number,title", "--jq", '"\\(.number)\\t\\(.title)"'], { cwd });
+  const [number, ...rest] = out.trim().split("\t");
+  return { number, title: rest.join("\t") };
+}
+
+/**
+ * Which PR this review belongs to. GH_PR_NUMBER (set by launchers that pipe a
+ * PR diff into hunk) wins; otherwise the checked-out branch's open PR. Returns
+ * null — after notifying — when there is no PR to attach notes to, since
+ * GitHub reviews cannot be left on a bare branch.
+ */
+async function resolveTargetPr(ctx: ExtensionCommandContext): Promise<TargetPr | null> {
+  const envPr = process.env.GH_PR_NUMBER?.trim();
+  if (envPr) {
+    if (!/^\d+$/.test(envPr)) {
+      ctx.notify(`gh-review: GH_PR_NUMBER="${envPr}" is not a PR number`, "error");
+      return null;
+    }
+    try {
+      return await ghPrJson(["pr", "view", envPr], ctx.cwd);
+    } catch (e) {
+      ctx.notify(`gh-review: PR #${envPr} not found: ${(e as Error).message.split("\n")[0]}`, "error");
+      return null;
+    }
+  }
+  try {
+    return await ghPrJson(["pr", "view"], ctx.cwd);
+  } catch {
+    ctx.notify(
+      "gh-review: no open PR for the checked-out branch — notes can only be submitted to a PR. Open one first (gh pr create).",
+      "warning",
+    );
+    return null;
+  }
+}
+
 export default function (hunk: HunkExtensionAPI) {
   // Fallback note collection, live from lifecycle events.
   const collected = new Map<string, Note>();
@@ -104,7 +150,9 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
     return;
   }
 
-  // 2. Resolve repo + a default PR guess (current branch), then confirm the target.
+  // 2. Resolve repo + the PR this review belongs to. The number is never
+  // typed by hand: notes can only sensibly land on the PR whose diff is
+  // loaded (comment line positions must match that PR's head diff).
   let nameWithOwner: string;
   try {
     nameWithOwner = (await mustRun("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { cwd: ctx.cwd })).trim();
@@ -113,24 +161,16 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
     return;
   }
 
-  let defaultPr = "";
-  try {
-    defaultPr = (await mustRun("gh", ["pr", "view", "--json", "number", "--jq", ".number"], { cwd: ctx.cwd })).trim();
-  } catch {
-    // No PR for the checked-out branch — fine, the user types one.
-  }
+  const pr = await resolveTargetPr(ctx);
+  if (!pr) return; // resolveTargetPr already explained why
 
-  const prInput = await ctx.dialogs.input({
-    title: `Submit ${notes.length} note${notes.length === 1 ? "" : "s"} to PR #`,
-    placeholder: "PR number",
-    initial: defaultPr,
+  const ok = await ctx.dialogs.confirm({
+    title: `Submit ${notes.length} note${notes.length === 1 ? "" : "s"} to PR #${pr.number}?`,
+    body: pr.title,
+    confirmLabel: "submit",
   });
-  if (prInput === null) return;
-  const prNumber = prInput.trim();
-  if (!/^\d+$/.test(prNumber)) {
-    ctx.notify(`gh-review: "${prInput}" is not a PR number`, "error");
-    return;
-  }
+  if (!ok) return;
+  const prNumber = pr.number;
 
   const choice = await ctx.dialogs.select({
     title: `Review type for PR #${prNumber}`,
