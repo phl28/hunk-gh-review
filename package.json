@@ -2,6 +2,8 @@
   "name": "hunk-gh-review",
   "version": "0.1.0",
   "description": "Hunk extension: submit review notes as a GitHub PR review",
+  "license": "MIT",
+  "repository": "github:phl28/hunk-gh-review",
   "hunk": {
     "extensions": ["./index.ts"]
   },
