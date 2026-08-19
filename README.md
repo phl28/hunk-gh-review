@@ -4,10 +4,25 @@ A [hunk](https://hunk.dev) extension that submits your review notes as a real Gi
 
 ## Usage
 
-1. Review a PR in hunk, telling hunk which PR the diff belongs to: `gh pr diff 123 | GH_PR_NUMBER=123 GH_PR_REPO=owner/repo hunk patch -` — or use a launcher that does this for you (`hpr` script, or the lazygit `v` custom command).
+No lazygit or other tooling needed — just hunk and gh. Three ways in:
+
+```bash
+# A. Check the PR out, then review its changes
+gh pr checkout 123 && hunk diff origin/main...HEAD
+
+# B. Review uncommitted work on a branch that has an open PR
+hunk diff
+
+# C. Checkout-free: pipe the PR diff in, naming the PR so submits target it
+gh pr diff 123 | GH_PR_NUMBER=123 GH_PR_REPO=owner/repo hunk patch -
+```
+
+A and B resolve the PR automatically from the checked-out branch. C needs the env vars (or a launcher that sets them — e.g. the author's `hpr` script / lazygit `v` command), because a piped diff carries no PR identity.
+
+Then, inside hunk:
 2. Press **`T`** for the **PR threads pane**: every review thread on the PR, docked right. Opening it when threads exist also enters a keyboard mode — `j`/`k` (or arrows) walk the thread list, `g`/`G` jump to the ends, and the diff follows each selection to its exact line; `enter` or `esc` drops back to normal diff keys. Clicking a thread works too. Press **`R`** to reply to the active thread. Threads refetch on reloads, after replies, and after you submit a review.
-3. Press `c` on hunks/lines to leave notes as you go.
-4. Press **`S`** to submit:
+2. Press `c` on hunks/lines to leave notes as you go.
+3. Press **`S`** to submit:
    - resolves the target PR itself — `GH_PR_NUMBER`/`GH_PR_REPO` if the launcher set them, otherwise the checked-out branch's open PR — and asks you to **confirm** it (number + title). The number is never typed by hand: comments can only land on the PR whose diff is under review, since their line positions must match that PR's head diff. A set-but-empty `GH_PR_NUMBER` means the launcher already determined this review has no open PR, so the checked-out branch's PR is *not* used as a fallback (that would target the wrong PR)
    - asks for the review type (Comment / Approve / Request changes) and an optional top-level body
    - posts one atomic GitHub review containing every note as an inline comment (`new`-side notes → `RIGHT`, `old`-side → `LEFT`)
