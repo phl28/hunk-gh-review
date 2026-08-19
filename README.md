@@ -41,8 +41,10 @@ Use one or the other — two sources providing the same extension id collide, an
 ## Develop
 
 ```bash
-npm install
-npm run typecheck   # tsc --noEmit against the shipped hunkdiff extension types
+pnpm install
+pnpm run typecheck   # tsc --noEmit against the shipped hunkdiff extension types
 ```
+
+(`hunkdiff` is a types-only devDependency — the hunk binary that runs the extension is your system install — so its bundled `bun` binary build script is disabled in `pnpm-workspace.yaml`.)
 
 Test a change live: `hunk diff --extension ~/Code/hunk-gh-review` in any dirty repo.

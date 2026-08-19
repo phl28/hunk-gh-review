@@ -1,0 +1,6 @@
+# hunkdiff is a types-only devDependency (we typecheck against its .d.ts);
+# the hunk binary that runs the extension is the system one (brew/mise/npm -g).
+# Its bundled bun binary build script is therefore not needed — keep installs
+# clean and supply-chain-quiet.
+allowBuilds:
+  bun: false
