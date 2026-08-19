@@ -56,75 +56,14 @@ customCommands:
     output: terminal   # suspends lazygit while hunk runs; quitting hunk drops you back
 ```
 
-<details>
-<summary><code>hpr</code> (save as <code>~/.local/bin/hpr</code>, <code>chmod +x</code>)</summary>
+If your config already has a `customCommands:` key, add just the list item under it — a second top-level `customCommands:` is a duplicate YAML key, and one of the two blocks is dropped.
+
+The script is [`scripts/hpr`](scripts/hpr) in this repo — drop it on your `PATH`:
 
 ```bash
-#!/usr/bin/env bash
-# hpr — review a PR or branch's changes in hunk.
-#
-#   hpr            current branch: its PR diff, or git diff vs the default branch
-#   hpr 123        PR #123 (works for merged/closed PRs too)
-#   hpr feature-x  branch's PR diff if it has an open PR, else git diff vs default branch
-#
-# Pipes into `hunk patch -` with GH_PR_NUMBER/GH_PR_REPO set so the gh-review
-# extension knows which PR notes belong to. Empty GH_PR_NUMBER = no open PR:
-# reviewing works fine, submitting (S) is unavailable — GitHub reviews attach
-# to PRs, not branches.
-#
-# Repo resolution: gh prefers an `upstream` remote over `origin`, which points
-# every gh call at the wrong repo in fork-style clones. So we pin -R to the
-# repo of the branch's tracking remote (or origin), and pass it through as
-# GH_PR_REPO. `gh repo set-default` fixes gh repo-wide; this works without it.
-set -uo pipefail
-
-# owner/repo for a branch's tracking remote, else origin, else empty (gh default).
-resolve_repo() {
-  local branch="$1" remote url
-  remote=$(git config "branch.$branch.remote" 2>/dev/null) || remote=""
-  [[ -z "$remote" ]] && remote="origin"
-  url=$(git remote get-url "$remote" 2>/dev/null) || return 0
-  echo "$url" | sed -E -e 's#^git@[^:]+:##' -e 's#^https?://[^/]+/##' -e 's#\.git$##'
-}
-
-target="${1:-}"
-
-if [[ "$target" =~ ^[0-9]+$ ]]; then
-  repo=$(resolve_repo "$(git branch --show-current)")
-  rflag=(); [[ -n "$repo" ]] && rflag=(-R "$repo")
-  gh pr diff "$target" "${rflag[@]}" | GH_PR_NUMBER="$target" GH_PR_REPO="$repo" hunk patch -
-  exit $?
-fi
-
-branch="$target"
-if [[ -z "$branch" ]]; then
-  branch=$(git branch --show-current)
-  [[ -z "$branch" ]] && { echo "hpr: detached HEAD — pass a PR number or branch" >&2; exit 1; }
-else
-  git rev-parse --verify --quiet "$branch" >/dev/null || { echo "hpr: no such branch: $branch" >&2; exit 1; }
-fi
-
-repo=$(resolve_repo "$branch")
-rflag=(); [[ -n "$repo" ]] && rflag=(-R "$repo")
-
-# gh's branch lookup only finds *open* PRs; merged/closed PRs need `hpr <number>`.
-pr=$(gh pr view "$branch" --json number --jq .number "${rflag[@]}" 2>/dev/null) || true
-
-if [[ -n "$pr" ]]; then
-  gh pr diff "$pr" "${rflag[@]}" | GH_PR_NUMBER="$pr" GH_PR_REPO="$repo" hunk patch -
-else
-  base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name "${rflag[@]}" 2>/dev/null) || base=""
-  [[ -z "$base" ]] && base="main"
-  echo "hpr: no open PR for '$branch' — reviewing diff vs origin/$base (S submit unavailable)" >&2
-  if [[ -z "$repo" && -n $(git config "remote.upstream.url" 2>/dev/null) ]]; then
-    echo "hpr: note: this clone has an 'upstream' remote, which gh prefers over origin —" >&2
-    echo "      if the PR exists but wasn't found, run: gh repo set-default <owner>/<repo>" >&2
-  fi
-  git diff "origin/$base...$branch" | GH_PR_NUMBER="" GH_PR_REPO="$repo" hunk patch -
-fi
+curl -fsSL https://raw.githubusercontent.com/phl28/hunk-gh-review/main/scripts/hpr -o ~/.local/bin/hpr
+chmod +x ~/.local/bin/hpr
 ```
-
-</details>
 
 Because the script sets the env vars, `S` submits to the branch under the lazygit cursor — even for a branch you don't have checked out. `hpr` also works on its own from the shell (`hpr 123`, `hpr feature-x`, bare `hpr` for the current branch).
 
@@ -135,6 +74,8 @@ Requires hunk ≥ 0.19 (the pane and keyboard-mode APIs) and the [`gh`](https://
 ```bash
 hunk extension install phl28/hunk-gh-review
 ```
+
+The install asks for confirmation, so it needs a terminal; pass `--yes` when running it from a script or an agent.
 
 For local development on this repo, point your user config at the checkout instead (`~/.config/hunk/config.toml`):
 
