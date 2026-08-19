@@ -2,6 +2,8 @@
 
 A [hunk](https://hunk.dev) extension that submits your review notes as a real GitHub PR review — Comment, Approve, or Request changes — without leaving the terminal.
 
+![The PR threads pane docked in hunk, keyboard-navigating review threads for PR #1](docs/assets/threads-pane.png)
+
 ## Usage
 
 No lazygit or other tooling needed — just hunk and gh. Three ways in:
@@ -35,6 +37,92 @@ Inline notes are optional, matching the GitHub UI: **Approve** and **Request cha
 **Fork-style clones:** gh resolves its base repo from remotes with the priority `upstream` > `github` > `origin`, so in clones with an `upstream` remote, bare `gh pr view`/`gh repo view` can silently query the wrong repo. Pass `GH_PR_REPO` (the `hpr` launcher derives it from the branch's tracking remote), or fix the clone once with `gh repo set-default owner/repo`.
 
 The whole review is a single GitHub API call: if GitHub rejects any comment position, nothing is posted and the error is shown as a notification.
+
+### Example launcher: lazygit + `hpr`
+
+Optional, but this is how the author drives it: a small `hpr` script that resolves the PR for a branch (falling back to a plain branch diff when there isn't one), passes the PR identity through as `GH_PR_NUMBER`/`GH_PR_REPO` so `S` targets correctly, and pipes the diff into hunk — wired to a `v` key in [lazygit](https://github.com/jesseduffield/lazygit)'s branches panel:
+
+```yaml
+# lazygit config.yml (macOS: ~/Library/Application Support/lazygit/config.yml)
+customCommands:
+  - key: 'v'
+    context: 'localBranches'
+    description: 'Review PR in hunk'
+    command: 'hpr {{.SelectedLocalBranch.Name | quote}}'
+    output: terminal   # suspends lazygit while hunk runs; quitting hunk drops you back
+```
+
+<details>
+<summary><code>hpr</code> (save as <code>~/.local/bin/hpr</code>, <code>chmod +x</code>)</summary>
+
+```bash
+#!/usr/bin/env bash
+# hpr — review a PR or branch's changes in hunk.
+#
+#   hpr            current branch: its PR diff, or git diff vs the default branch
+#   hpr 123        PR #123 (works for merged/closed PRs too)
+#   hpr feature-x  branch's PR diff if it has an open PR, else git diff vs default branch
+#
+# Pipes into `hunk patch -` with GH_PR_NUMBER/GH_PR_REPO set so the gh-review
+# extension knows which PR notes belong to. Empty GH_PR_NUMBER = no open PR:
+# reviewing works fine, submitting (S) is unavailable — GitHub reviews attach
+# to PRs, not branches.
+#
+# Repo resolution: gh prefers an `upstream` remote over `origin`, which points
+# every gh call at the wrong repo in fork-style clones. So we pin -R to the
+# repo of the branch's tracking remote (or origin), and pass it through as
+# GH_PR_REPO. `gh repo set-default` fixes gh repo-wide; this works without it.
+set -uo pipefail
+
+# owner/repo for a branch's tracking remote, else origin, else empty (gh default).
+resolve_repo() {
+  local branch="$1" remote url
+  remote=$(git config "branch.$branch.remote" 2>/dev/null) || remote=""
+  [[ -z "$remote" ]] && remote="origin"
+  url=$(git remote get-url "$remote" 2>/dev/null) || return 0
+  echo "$url" | sed -E -e 's#^git@[^:]+:##' -e 's#^https?://[^/]+/##' -e 's#\.git$##'
+}
+
+target="${1:-}"
+
+if [[ "$target" =~ ^[0-9]+$ ]]; then
+  repo=$(resolve_repo "$(git branch --show-current)")
+  rflag=(); [[ -n "$repo" ]] && rflag=(-R "$repo")
+  gh pr diff "$target" "${rflag[@]}" | GH_PR_NUMBER="$target" GH_PR_REPO="$repo" hunk patch -
+  exit $?
+fi
+
+branch="$target"
+if [[ -z "$branch" ]]; then
+  branch=$(git branch --show-current)
+  [[ -z "$branch" ]] && { echo "hpr: detached HEAD — pass a PR number or branch" >&2; exit 1; }
+else
+  git rev-parse --verify --quiet "$branch" >/dev/null || { echo "hpr: no such branch: $branch" >&2; exit 1; }
+fi
+
+repo=$(resolve_repo "$branch")
+rflag=(); [[ -n "$repo" ]] && rflag=(-R "$repo")
+
+# gh's branch lookup only finds *open* PRs; merged/closed PRs need `hpr <number>`.
+pr=$(gh pr view "$branch" --json number --jq .number "${rflag[@]}" 2>/dev/null) || true
+
+if [[ -n "$pr" ]]; then
+  gh pr diff "$pr" "${rflag[@]}" | GH_PR_NUMBER="$pr" GH_PR_REPO="$repo" hunk patch -
+else
+  base=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name "${rflag[@]}" 2>/dev/null) || base=""
+  [[ -z "$base" ]] && base="main"
+  echo "hpr: no open PR for '$branch' — reviewing diff vs origin/$base (S submit unavailable)" >&2
+  if [[ -z "$repo" && -n $(git config "remote.upstream.url" 2>/dev/null) ]]; then
+    echo "hpr: note: this clone has an 'upstream' remote, which gh prefers over origin —" >&2
+    echo "      if the PR exists but wasn't found, run: gh repo set-default <owner>/<repo>" >&2
+  fi
+  git diff "origin/$base...$branch" | GH_PR_NUMBER="" GH_PR_REPO="$repo" hunk patch -
+fi
+```
+
+</details>
+
+Because the script sets the env vars, `S` submits to the branch under the lazygit cursor — even for a branch you don't have checked out. `hpr` also works on its own from the shell (`hpr 123`, `hpr feature-x`, bare `hpr` for the current branch).
 
 ## Install
 
