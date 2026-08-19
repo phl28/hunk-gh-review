@@ -19,7 +19,7 @@ hunk diff
 gh pr diff 123 | GH_PR_NUMBER=123 GH_PR_REPO=owner/repo hunk patch -
 ```
 
-A and B resolve the PR automatically from the checked-out branch. C needs the env vars (or a launcher that sets them — e.g. the author's `hpr` script / lazygit `v` command), because a piped diff carries no PR identity.
+A and B resolve the PR automatically from the checked-out branch. C needs the env vars (or a launcher that sets them — see the lazygit example below), because a piped diff carries no PR identity.
 
 Then, inside hunk:
 1. Press **`T`** for the **PR threads pane**: every review thread on the PR, docked right. Opening it when threads exist also enters a keyboard mode — `j`/`k` (or arrows) walk the thread list, `g`/`G` jump to the ends, and the diff follows each selection to its exact line; `enter` or `esc` drops back to normal diff keys. Clicking a thread works too. Press **`R`** to reply to the active thread. Threads refetch on reloads, after replies, and after you submit a review.
@@ -44,7 +44,7 @@ The whole review is a single GitHub API call: if GitHub rejects any comment posi
 
 ### Example launcher: lazygit + `hpr`
 
-Optional, but this is how the author drives it: a small `hpr` script that resolves the PR for a branch (falling back to a plain branch diff when there isn't one), passes the PR identity through as `GH_PR_NUMBER`/`GH_PR_REPO` so `S` targets correctly, and pipes the diff into hunk — wired to a `v` key in [lazygit](https://github.com/jesseduffield/lazygit)'s branches panel:
+Optional, but this is how I use it: a small `hpr` script that resolves the PR for a branch (falling back to a plain branch diff when there isn't one), passes the PR identity through as `GH_PR_NUMBER`/`GH_PR_REPO` so `S` targets correctly, and pipes the diff into hunk — wired to a `v` key in [lazygit](https://github.com/jesseduffield/lazygit)'s branches panel:
 
 ```yaml
 # lazygit config.yml (macOS: ~/Library/Application Support/lazygit/config.yml)
