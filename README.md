@@ -19,7 +19,7 @@ hunk diff
 gh pr diff 123 | GH_PR_NUMBER=123 GH_PR_REPO=owner/repo hunk patch -
 ```
 
-A and B resolve the PR automatically from the checked-out branch. C needs the env vars (or a launcher that sets them — e.g. the author's `hpr` script / lazygit `v` command), because a piped diff carries no PR identity.
+A and B resolve the PR automatically from the checked-out branch. C needs the env vars (or a launcher that sets them — see the lazygit example below), because a piped diff carries no PR identity.
 
 Then, inside hunk:
 1. Press **`T`** for the **PR threads pane**: every review thread on the PR, docked right. Opening it when threads exist also enters a keyboard mode — `j`/`k` (or arrows) walk the thread list, `g`/`G` jump to the ends, and the diff follows each selection to its exact line; `enter` or `esc` drops back to normal diff keys. Clicking a thread works too. Press **`R`** to reply to the active thread. Threads refetch on reloads, after replies, and after you submit a review.
@@ -34,13 +34,17 @@ If there is no PR to attach notes to (e.g. reviewing uncommitted changes on a br
 
 Inline notes are optional, matching the GitHub UI: **Approve** and **Request changes** submit fine with no notes and no body; a **Comment** review with no inline notes requires a top-level body (the body prompt tells you when it's required).
 
+| Leave notes inline (`c`) | Choose the review type (`S`) |
+| --- | --- |
+| ![Note editor open over the diff](docs/assets/leave-a-note.png) | ![Comment / Approve / Request changes dialog](docs/assets/review-type-dialog.png) |
+
 **Fork-style clones:** gh resolves its base repo from remotes with the priority `upstream` > `github` > `origin`, so in clones with an `upstream` remote, bare `gh pr view`/`gh repo view` can silently query the wrong repo. Pass `GH_PR_REPO` (the `hpr` launcher derives it from the branch's tracking remote), or fix the clone once with `gh repo set-default owner/repo`.
 
 The whole review is a single GitHub API call: if GitHub rejects any comment position, nothing is posted and the error is shown as a notification.
 
 ### Example launcher: lazygit + `hpr`
 
-Optional, but this is how the author drives it: a small `hpr` script that resolves the PR for a branch (falling back to a plain branch diff when there isn't one), passes the PR identity through as `GH_PR_NUMBER`/`GH_PR_REPO` so `S` targets correctly, and pipes the diff into hunk — wired to a `v` key in [lazygit](https://github.com/jesseduffield/lazygit)'s branches panel:
+Optional, but this is how I use it: a small `hpr` script that resolves the PR for a branch (falling back to a plain branch diff when there isn't one), passes the PR identity through as `GH_PR_NUMBER`/`GH_PR_REPO` so `S` targets correctly, and pipes the diff into hunk — wired to a `v` key in [lazygit](https://github.com/jesseduffield/lazygit)'s branches panel:
 
 ```yaml
 # lazygit config.yml (macOS: ~/Library/Application Support/lazygit/config.yml)
