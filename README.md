@@ -4,6 +4,18 @@ A [hunk](https://hunk.dev) extension that submits your review notes as a real Gi
 
 ![The PR threads pane docked in hunk, keyboard-navigating review threads for PR #1](docs/assets/threads-pane.png)
 
+## Install
+
+Requires hunk ≥ 0.19 (the pane and keyboard-mode APIs) and the [`gh`](https://cli.github.com) CLI, authenticated. The manifest declares `apiVersion: 6`, so older hunk versions refuse the install cleanly.
+
+```bash
+hunk extension install phl28/hunk-gh-review
+```
+
+The install asks for confirmation, so it needs a terminal; pass `--yes` when running it from a script or an agent.
+
+`hunk extension list` shows it once it lands; new hunk sessions pick it up automatically.
+
 ## Usage
 
 No lazygit or other tooling needed — just hunk and gh. Three ways in:
@@ -67,27 +79,6 @@ chmod +x ~/.local/bin/hpr
 
 Because the script sets the env vars, `S` submits to the branch under the lazygit cursor — even for a branch you don't have checked out. `hpr` also works on its own from the shell (`hpr 123`, `hpr feature-x`, bare `hpr` for the current branch).
 
-## Install
-
-Requires hunk ≥ 0.19 (the pane and keyboard-mode APIs) and the [`gh`](https://cli.github.com) CLI, authenticated. The manifest declares `apiVersion: 6`, so older hunk versions refuse the install cleanly.
-
-```bash
-hunk extension install phl28/hunk-gh-review
-```
-
-The install asks for confirmation, so it needs a terminal; pass `--yes` when running it from a script or an agent.
-
-For local development on this repo, point your user config at the checkout instead (`~/.config/hunk/config.toml`):
-
-```toml
-[extensions]
-paths = ["/path/to/hunk-gh-review"]
-```
-
-Do **not** symlink the folder into `~/.config/hunk/extensions/` — the auto-scanner silently skips symlinked directories (the `readdir` dirent for a symlink fails `isDirectory()`).
-
-Use one install source or the other — two sources providing the same extension id collide, and the second is skipped with a startup notice.
-
 ## Notes
 
 - GitHub calls go through `gh`, so auth/scopes are whatever `gh auth status` says.
@@ -108,3 +99,14 @@ pnpm run typecheck   # tsc --noEmit against the shipped hunkdiff extension types
 (`hunkdiff` is a types-only devDependency — the hunk binary that runs the extension is your system install — so its bundled `bun` binary build script is disabled in `pnpm-workspace.yaml`.)
 
 Test a change live: `hunk diff --extension ~/Code/hunk-gh-review` in any dirty repo.
+
+To load the checkout instead of the installed copy in every session, point your user config at it (`~/.config/hunk/config.toml`):
+
+```toml
+[extensions]
+paths = ["/path/to/hunk-gh-review"]
+```
+
+Do **not** symlink the folder into `~/.config/hunk/extensions/` — the auto-scanner silently skips symlinked directories (the `readdir` dirent for a symlink fails `isDirectory()`).
+
+Use one install source or the other — two sources providing the same extension id collide, and the second is skipped with a startup notice.
