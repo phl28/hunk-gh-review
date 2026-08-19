@@ -3,7 +3,10 @@
  *
  * Press `S` (or rebind `gh-review.submit` in [keybindings]) to post every
  * note in the current review as inline comments on the PR under review,
- * then submit the review as Comment / Approve / Request changes.
+ * then submit the review as Comment / Approve / Request changes. Notes are
+ * optional — matching the GitHub UI, Approve and Request changes submit
+ * with no content at all; a Comment review without notes requires a
+ * top-level body.
  *
  * The target PR is never typed by hand — it is the PR of the diff being
  * reviewed: launchers that pipe a PR diff in (`gh pr diff 42 | hunk patch -`)
@@ -172,10 +175,7 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
   } catch {
     notes = [...collected.values()];
   }
-  if (notes.length === 0) {
-    ctx.notify("No notes to submit — press `c` on a hunk to add one first", "warning");
-    return;
-  }
+  // Notes are optional: approvals and body-only reviews need none.
 
   // 2. Resolve repo + the PR this review belongs to. The number is never
   // typed by hand: notes can only sensibly land on the PR whose diff is
@@ -186,8 +186,12 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
   const pr = await resolveTargetPr(ctx, nameWithOwner);
   if (!pr) return; // resolveTargetPr already explained why
 
+  const noteCount = notes.length;
   const ok = await ctx.dialogs.confirm({
-    title: `Submit ${notes.length} note${notes.length === 1 ? "" : "s"} to PR #${pr.number}?`,
+    title:
+      noteCount > 0
+        ? `Submit ${noteCount} note${noteCount === 1 ? "" : "s"} to PR #${pr.number}?`
+        : `Submit a review with no inline notes to PR #${pr.number}?`,
     body: pr.title,
     confirmLabel: "submit",
   });
@@ -201,21 +205,36 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
   if (choice === null) return;
   const event = { Comment: "COMMENT", Approve: "APPROVE", "Request changes": "REQUEST_CHANGES" }[choice]!;
 
-  const body = (await ctx.dialogs.input({
-    title: "Review body (optional — escape to skip)",
+  // Matching the GitHub UI: only Comment requires content. Approve and
+  // Request changes submit fine with no notes and no body. (The REST docs
+  // nominally require a body field for REQUEST_CHANGES, so an empty string
+  // is sent rather than omitting it.)
+  const needsBody = noteCount === 0 && event === "COMMENT";
+  const bodyInput = await ctx.dialogs.input({
+    title: needsBody ? "Review body (required — no inline notes)" : "Review body (optional — escape to skip)",
     placeholder: "Top-level review comment",
-  })) ?? "";
+  });
+  if (bodyInput === null && needsBody) return; // escape cancels a required field
+  const body = (bodyInput ?? "").trim();
+  if (needsBody && !body) {
+    ctx.notify("gh-review: a top-level body is required when a Comment review has no inline notes", "warning");
+    return;
+  }
 
   // 3. Post one atomic review: comments + event in a single call.
   const payload = {
     event,
-    ...(body.trim() ? { body: body.trim() } : {}),
-    comments: notes.map((n) => ({
-      path: n.filePath,
-      line: n.line,
-      side: n.side === "old" ? "LEFT" : "RIGHT",
-      body: n.body,
-    })),
+    ...(body ? { body } : event === "REQUEST_CHANGES" ? { body: "" } : {}),
+    ...(noteCount > 0
+      ? {
+          comments: notes.map((n) => ({
+            path: n.filePath,
+            line: n.line,
+            side: n.side === "old" ? "LEFT" : "RIGHT",
+            body: n.body,
+          })),
+        }
+      : {}),
   };
   const tmp = join(tmpdir(), `hunk-gh-review-${Date.now()}.json`);
   try {
@@ -236,12 +255,18 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
   }
 
   // 4. Clear the submitted notes so a second press doesn't double-post.
-  try {
-    await run("hunk", ["session", "comment", "clear", "--repo", ctx.cwd, "--include-user", "--yes"], { cwd: ctx.cwd });
-  } catch {
-    // Session daemon unreachable — notes stay, harmless.
+  if (noteCount > 0) {
+    try {
+      await run("hunk", ["session", "comment", "clear", "--repo", ctx.cwd, "--include-user", "--yes"], { cwd: ctx.cwd });
+    } catch {
+      // Session daemon unreachable — notes stay, harmless.
+    }
+    collected.clear();
   }
-  collected.clear();
 
-  ctx.notify(`Submitted ${choice} review with ${notes.length} comment${notes.length === 1 ? "" : "s"} on PR #${prNumber}`);
+  ctx.notify(
+    noteCount > 0
+      ? `Submitted ${choice} review with ${noteCount} comment${noteCount === 1 ? "" : "s"} on PR #${prNumber}`
+      : `Submitted ${choice} review on PR #${prNumber}`,
+  );
 }

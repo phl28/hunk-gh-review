@@ -14,6 +14,8 @@ A [hunk](https://hunk.dev) extension that submits your review notes as a real Gi
 
 If there is no PR to attach notes to (e.g. reviewing uncommitted changes on a branch with no open PR), `S` fails with a clear message — GitHub reviews attach to PRs, not branches.
 
+Inline notes are optional, matching the GitHub UI: **Approve** and **Request changes** submit fine with no notes and no body; a **Comment** review with no inline notes requires a top-level body (the body prompt tells you when it's required).
+
 **Fork-style clones:** gh resolves its base repo from remotes with the priority `upstream` > `github` > `origin`, so in clones with an `upstream` remote, bare `gh pr view`/`gh repo view` can silently query the wrong repo. Pass `GH_PR_REPO` (the `hpr` launcher derives it from the branch's tracking remote), or fix the clone once with `gh repo set-default owner/repo`.
 
 The whole review is a single GitHub API call: if GitHub rejects any comment position, nothing is posted and the error is shown as a notification.
