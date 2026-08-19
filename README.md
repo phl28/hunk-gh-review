@@ -18,18 +18,18 @@ The whole review is a single GitHub API call: if GitHub rejects any comment posi
 
 Requires hunk ≥ 0.18 and the [`gh`](https://cli.github.com) CLI, authenticated.
 
-**hunk ≥ 0.19** (managed install):
-
 ```bash
-hunk extension install <owner>/hunk-gh-review
+hunk extension install <owner>/hunk-gh-review        # hunk ≥ 0.19
 ```
 
-**hunk 0.18** (no `extension install` yet) — clone anywhere and symlink into hunk's extension dir:
+On hunk 0.18 (no `extension install`), or for local development on this repo, symlink a checkout into hunk's extension dir instead:
 
 ```bash
 git clone <repo-url> ~/Code/hunk-gh-review
 ln -s ~/Code/hunk-gh-review ~/.config/hunk/extensions/hunk-gh-review
 ```
+
+Use one or the other — two sources providing the same extension id collide, and the second is skipped with a startup notice.
 
 ## Notes
 
