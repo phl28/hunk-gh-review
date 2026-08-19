@@ -1,0 +1,16 @@
+{
+  "name": "hunk-gh-review",
+  "version": "0.1.0",
+  "description": "Hunk extension: submit review notes as a GitHub PR review",
+  "hunk": {
+    "extensions": ["./index.ts"]
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "hunkdiff": "^0.18.0",
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
