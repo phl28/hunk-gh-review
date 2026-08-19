@@ -1,14 +1,17 @@
 {
   "compilerOptions": {
     "strict": true,
+    "skipLibCheck": true,
     "noEmit": true,
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2022",
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
     "types": ["node"],
     "paths": {
       "hunkdiff/extension": ["./node_modules/hunkdiff/dist/npm/extension/index.d.ts"]
     }
   },
-  "include": ["index.ts"]
+  "include": ["index.tsx"]
 }
