@@ -266,7 +266,7 @@ function groupThreads(comments: GhComment[]): { threads: Thread[]; skippedOutdat
   return { threads, skippedOutdated: comments.length - usable.length };
 }
 
-async function fetchThreads(cwd: string): Promise<void> {
+async function fetchThreads(cwd: string, notify?: (message: string) => void): Promise<void> {
   setThreadsState({ phase: "loading", activeThreadId: null });
   const target = await resolveTargetQuiet(cwd);
   if (!target) {
@@ -278,9 +278,15 @@ async function fetchThreads(cwd: string): Promise<void> {
       mustRun("gh", ["api", `repos/${target.repo}/pulls/${target.pr}/comments?per_page=100`, "--paginate", "--slurp"], { cwd }),
       ghPrJson(["pr", "view", target.pr], cwd, target.repo).catch(() => ({ number: target.pr, title: "" })),
     ]);
-    const comments = JSON.parse(commentsOut) as GhComment[];
+    // gh api --paginate --slurp yields one array PER PAGE ([[...],[...]]),
+    // not a flat list — flatten before grouping or every comment is dropped.
+    const parsed = JSON.parse(commentsOut);
+    const comments = (Array.isArray(parsed) && parsed.every(Array.isArray) ? parsed.flat() : parsed) as GhComment[];
     const { threads, skippedOutdated } = groupThreads(comments);
     setThreadsState({ phase: "ready", repo: target.repo, pr, threads, skippedOutdated });
+    if (threads.length > 0) {
+      notify?.(`PR #${pr.number}: ${threads.length} review thread${threads.length === 1 ? "" : "s"} — press T`);
+    }
   } catch (e) {
     setThreadsState({ phase: "error", message: (e as Error).message.split("\n")[0], threads: [] });
   }
@@ -546,8 +552,8 @@ export default function (hunk: HunkExtensionAPI) {
   hunk.on("note_edited", ({ note }) => track(note));
 
   // Fetch threads once the review content is known (and on reloads).
-  hunk.on("changeset_loaded", (_payload, ctx) => void fetchThreads(ctx.cwd));
-  hunk.on("session_reload", (_payload, ctx) => void fetchThreads(ctx.cwd));
+  hunk.on("changeset_loaded", (_payload, ctx) => void fetchThreads(ctx.cwd, (m) => ctx.notify(m)));
+  hunk.on("session_reload", (_payload, ctx) => void fetchThreads(ctx.cwd, (m) => ctx.notify(m)));
 
   hunk.registerPane({
     id: "threads",
