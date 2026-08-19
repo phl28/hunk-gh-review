@@ -23,13 +23,13 @@ The whole review is a single GitHub API call: if GitHub rejects any comment posi
 
 ## Install
 
-Requires hunk ≥ 0.18 and the [`gh`](https://cli.github.com) CLI, authenticated.
+Requires hunk ≥ 0.19 (the pane and keyboard-mode APIs) and the [`gh`](https://cli.github.com) CLI, authenticated. The manifest declares `apiVersion: 6`, so older hunk versions refuse the install cleanly.
 
 ```bash
-hunk extension install phl28/hunk-gh-review          # hunk ≥ 0.19
+hunk extension install phl28/hunk-gh-review
 ```
 
-On hunk 0.18 (no `extension install`), or for local development on this repo, point your user config at the checkout (`~/.config/hunk/config.toml`):
+For local development on this repo, point your user config at the checkout instead (`~/.config/hunk/config.toml`):
 
 ```toml
 [extensions]
