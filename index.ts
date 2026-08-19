@@ -7,10 +7,13 @@
  *
  * The target PR is never typed by hand — it is the PR of the diff being
  * reviewed: launchers that pipe a PR diff in (`gh pr diff 42 | hunk patch -`)
- * set GH_PR_NUMBER, and working-tree reviews fall back to the checked-out
- * branch's open PR. If neither yields a PR there is nowhere to post notes
- * (GitHub reviews attach to PRs, not branches), so the command fails with a
- * clear message instead of guessing.
+ * set GH_PR_NUMBER (and GH_PR_REPO, since gh's upstream>origin remote
+ * priority can otherwise resolve the wrong repo in fork-style clones), and
+ * working-tree reviews fall back to the checked-out branch's open PR. A
+ * set-but-empty GH_PR_NUMBER means the launcher already determined there is
+ * no open PR. If there is nowhere to post notes (GitHub reviews attach to
+ * PRs, not branches), the command fails with a clear message instead of
+ * guessing.
  *
  * Notes are read from the live session via `hunk session comment list`
  * (authoritative — includes deletions); the note_created/note_edited events
@@ -84,34 +87,58 @@ async function fetchSessionNotes(cwd: string): Promise<Note[]> {
 
 type TargetPr = { number: string; title: string };
 
-async function ghPrJson(args: string[], cwd: string): Promise<TargetPr> {
-  const out = await mustRun("gh", [...args, "--json", "number,title", "--jq", '"\\(.number)\\t\\(.title)"'], { cwd });
+/** Repo the review targets: the launcher's GH_PR_REPO wins, else gh's default. */
+async function resolveRepo(ctx: ExtensionCommandContext): Promise<string | null> {
+  const envRepo = process.env.GH_PR_REPO?.trim();
+  if (envRepo) return envRepo;
+  try {
+    return (await mustRun("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { cwd: ctx.cwd })).trim();
+  } catch (e) {
+    ctx.notify(`gh-review: not a GitHub repo or gh failed: ${(e as Error).message}`, "error");
+    return null;
+  }
+}
+
+async function ghPrJson(args: string[], cwd: string, repo?: string): Promise<TargetPr> {
+  const rflag = repo ? ["-R", repo] : [];
+  const out = await mustRun("gh", [...args, "--json", "number,title", "--jq", '"\\(.number)\\t\\(.title)"', ...rflag], { cwd });
   const [number, ...rest] = out.trim().split("\t");
   return { number, title: rest.join("\t") };
 }
 
 /**
  * Which PR this review belongs to. GH_PR_NUMBER (set by launchers that pipe a
- * PR diff into hunk) wins; otherwise the checked-out branch's open PR. Returns
- * null — after notifying — when there is no PR to attach notes to, since
- * GitHub reviews cannot be left on a bare branch.
+ * PR diff into hunk) wins; set-but-empty means the launcher already determined
+ * there is no open PR for this review, so we must NOT fall back to the
+ * checked-out branch's PR (that would target the wrong PR). Unset means a
+ * plain hunk session, where the checked-out branch's open PR is the sensible
+ * target. Returns null — after notifying — when there is no PR to attach
+ * notes to, since GitHub reviews cannot be left on a bare branch.
  */
-async function resolveTargetPr(ctx: ExtensionCommandContext): Promise<TargetPr | null> {
-  const envPr = process.env.GH_PR_NUMBER?.trim();
-  if (envPr) {
-    if (!/^\d+$/.test(envPr)) {
-      ctx.notify(`gh-review: GH_PR_NUMBER="${envPr}" is not a PR number`, "error");
+async function resolveTargetPr(ctx: ExtensionCommandContext, repo: string): Promise<TargetPr | null> {
+  const raw = process.env.GH_PR_NUMBER;
+  if (raw !== undefined) {
+    const envPr = raw.trim();
+    if (/^\d+$/.test(envPr)) {
+      try {
+        return await ghPrJson(["pr", "view", envPr], ctx.cwd, repo);
+      } catch (e) {
+        ctx.notify(`gh-review: PR #${envPr} not found in ${repo}: ${(e as Error).message.split("\n")[0]}`, "error");
+        return null;
+      }
+    }
+    if (envPr === "") {
+      ctx.notify(
+        "gh-review: no open PR for this review — notes can't be submitted to a bare branch. Open a PR first (gh pr create).",
+        "warning",
+      );
       return null;
     }
-    try {
-      return await ghPrJson(["pr", "view", envPr], ctx.cwd);
-    } catch (e) {
-      ctx.notify(`gh-review: PR #${envPr} not found: ${(e as Error).message.split("\n")[0]}`, "error");
-      return null;
-    }
+    ctx.notify(`gh-review: GH_PR_NUMBER="${raw}" is not a PR number`, "error");
+    return null;
   }
   try {
-    return await ghPrJson(["pr", "view"], ctx.cwd);
+    return await ghPrJson(["pr", "view"], ctx.cwd, repo);
   } catch {
     ctx.notify(
       "gh-review: no open PR for the checked-out branch — notes can only be submitted to a PR. Open one first (gh pr create).",
@@ -153,15 +180,10 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
   // 2. Resolve repo + the PR this review belongs to. The number is never
   // typed by hand: notes can only sensibly land on the PR whose diff is
   // loaded (comment line positions must match that PR's head diff).
-  let nameWithOwner: string;
-  try {
-    nameWithOwner = (await mustRun("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { cwd: ctx.cwd })).trim();
-  } catch (e) {
-    ctx.notify(`gh-review: not a GitHub repo or gh failed: ${(e as Error).message}`, "error");
-    return;
-  }
+  const nameWithOwner = await resolveRepo(ctx);
+  if (!nameWithOwner) return; // resolveRepo already explained why
 
-  const pr = await resolveTargetPr(ctx);
+  const pr = await resolveTargetPr(ctx, nameWithOwner);
   if (!pr) return; // resolveTargetPr already explained why
 
   const ok = await ctx.dialogs.confirm({
