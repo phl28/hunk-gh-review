@@ -1,12 +1,12 @@
 # hunk-gh-review
 
-A [hunk](https://hunk.dev) extension that submits your review notes as a real GitHub PR review — Comment, Approve, or Request changes — without leaving the terminal.
+A [hunk](https://hunk.dev) extension for reading PR threads, replying, and submitting local notes as GitHub reviews.
 
 ![The PR threads pane docked in hunk, keyboard-navigating review threads for PR #1](docs/assets/threads-pane.png)
 
 ## Install
 
-Requires hunk ≥ 0.19 (the pane and keyboard-mode APIs) and the [`gh`](https://cli.github.com) CLI, authenticated. The manifest declares `apiVersion: 6`, so older hunk versions refuse the install cleanly.
+Requires hunk ≥ 0.19 (the pane and keyboard-mode APIs), [Bun](https://bun.sh) for installation, and the [`gh`](https://cli.github.com) CLI, authenticated. The manifest declares `apiVersion: 6`, so older hunk versions refuse the install cleanly.
 
 ```bash
 hunk extension install phl28/hunk-gh-review
@@ -31,7 +31,7 @@ hunk diff
 gh pr diff 123 | GH_PR_NUMBER=123 GH_PR_REPO=owner/repo hunk patch -
 ```
 
-A and B resolve the PR automatically from the checked-out branch. C needs the env vars (or a launcher that sets them — see the lazygit example below), because a piped diff carries no PR identity.
+A and B resolve the PR from the branch's tracking ref, its local name, or a unique open PR whose head matches the checkout's commit. C needs the env vars (or a launcher that sets them), because a piped diff carries no PR identity.
 
 Then, inside hunk:
 1. Press **`T`** for the **PR threads pane**: every review thread on the PR, docked right. Opening it when threads exist also enters a keyboard mode — `j`/`k` (or arrows) walk the thread list, `g`/`G` jump to the ends, and the diff follows each selection to its exact line; `enter` or `esc` drops back to normal diff keys. Clicking a thread works too. Press **`R`** to reply to the active thread. Threads refetch on reloads, after replies, and after you submit a review.
@@ -53,6 +53,21 @@ Inline notes are optional, matching the GitHub UI: **Approve** and **Request cha
 **Fork-style clones:** gh resolves its base repo from remotes with the priority `upstream` > `github` > `origin`, so in clones with an `upstream` remote, bare `gh pr view`/`gh repo view` can silently query the wrong repo. Pass `GH_PR_REPO` (the `hpr` launcher derives it from the branch's tracking remote), or fix the clone once with `gh repo set-default owner/repo`.
 
 The whole review is a single GitHub API call: if GitHub rejects any comment position, nothing is posted and the error is shown as a notification.
+
+### Comment rendering
+
+Comments render as Markdown by default. HTML badges become their text labels, and HTML headings, links, and lists keep their structure. Images aren't downloaded. Fenced and inline code retain literal tags, entities, and indentation.
+
+Press `Alt+M` to switch between Markdown and the original comment text. The pane header shows the current mode. The command menu also exposes `gh-review.toggle-markdown`, and you can assign it another key in `[keybindings]`. The toggle applies to roots and replies for the current session; it doesn't change comments on GitHub.
+
+To start new sessions in raw mode, add this to `~/.config/hunk/config.toml`:
+
+```toml
+[extension.gh-review]
+render_markdown = false
+```
+
+If that section already exists, add the setting to it. Select a thread to expand the full finding and its replies; inactive threads show short previews. Both rendering modes use the same hierarchy: a divider and location header for each thread, bold author names, and replies grouped under an indented rail with separators between comments.
 
 ### Example launcher: lazygit + `hpr`
 
@@ -82,10 +97,10 @@ Because the script sets the env vars, `S` submits to the branch under the lazygi
 ## Notes
 
 - GitHub calls go through `gh`, so auth/scopes are whatever `gh auth status` says.
-- The threads pane shows review comments on the diff (`pulls/{N}/comments`). Comments sitting on outdated diff positions (e.g. after a force-push) are hidden, with the count shown in the header. PR *conversation* comments (not attached to code) are not shown.
+- The threads pane shows review comments on the diff (`pulls/{N}/comments`), including outdated discussions. Outdated threads show their original line and remain readable, but don't jump to obsolete diff positions. PR *conversation* comments (not attached to code) are not shown. Opening the pane retries PR discovery, so a push can connect an existing session to its PR.
 - `R` replies to the active thread — the one last clicked, or the one under the keyboard-mode cursor. While the mode is active, unhandled keys pass through (so `R`, `c`, `/` etc. keep working) and `esc` exits host-side.
 - Notes are read from the live session via `hunk session comment list` (authoritative, sees deletions); the `note_created`/`note_edited` event stream is a fallback for when the session daemon is unreachable.
-- Rebind keys in hunk's config: `[keybindings]` with `"gh-review.submit"`, `"gh-review.threads"`, `"gh-review.reply"` mapped to your chords.
+- Rebind keys in hunk's config: `[keybindings]` with `"gh-review.submit"`, `"gh-review.threads"`, `"gh-review.reply"`, or `"gh-review.toggle-markdown"` mapped to your chords.
 - Pane placement is configurable via `[extension.gh-review]` in hunk's config: `placement = "right"` (default), `"left"`, `"top"`, or `"bottom"`.
 - Hunk's built-in `e` key (open file in editor) reads `$EDITOR` and fails with "$EDITOR is not set." when there is none. This extension sets it for the session so the key works without a per-shell export: to force one, set `editor` in `[extension.gh-review]` (e.g. `editor = "code"`); otherwise it uses `$EDITOR` if already set, then `$VISUAL`, then git's editor (`GIT_EDITOR` / `core.editor`), then a small built-in list of common editors on `PATH`.
 - **Narrow terminals:** hunk responsively omits panes that don't fit — a side pane needs the terminal width minus the review's minimum width to leave at least its `min` columns, and the built-in files sidebar claims its share first. If `T` opens nothing visible, use `placement = "bottom"` (it only needs 5 rows) or widen the terminal.
@@ -94,10 +109,14 @@ Because the script sets the env vars, `S` submits to the branch under the lazygi
 
 ```bash
 pnpm install
+pnpm run build       # bundle the extension for Hunk's compiled loader
+pnpm test            # discovery, Markdown conversion, and native terminal rendering
 pnpm run typecheck   # tsc --noEmit against the shipped hunkdiff extension types
 ```
 
 (`hunkdiff` is a types-only devDependency — the hunk binary that runs the extension is your system install — so its bundled `bun` binary build script is disabled in `pnpm-workspace.yaml`.)
+
+The manifest loads `dist/index.js`, generated by `postinstall` when Hunk installs dependencies. Generated files stay out of Git. Rebuild after source changes; `pnpm test` also rebuilds before exercising the bundle. React and OpenTUI stay external so the extension uses Hunk's own instances; parser dependencies are bundled because Hunk's compiled loader can fail to resolve transitive packages. If you install dependencies with scripts disabled, run `bun run build` afterward.
 
 Test a change live: `hunk diff --extension ~/Code/hunk-gh-review` in any dirty repo.
 

@@ -33,8 +33,9 @@
  * $EDITOR for the session — config `editor` first, else $EDITOR/$VISUAL,
  * git's editor, then a PATH default.
  */
-import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
-import type { ScrollBoxRenderable } from "@opentui/core";
+import { useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { SyntaxStyle, TextAttributes, type ScrollBoxRenderable } from "@opentui/core";
+import { renderCommentMarkdown } from "./comment-markdown";
 import type {
   ExtensionCommandContext,
   ExtensionPaneProps,
@@ -211,9 +212,43 @@ async function ghPrJson(args: string[], cwd: string, repo?: string): Promise<Tar
   return { number, title: rest.join("\t") };
 }
 
+/** Resolve an open PR without assuming the local branch has the remote name. */
+async function resolveCheckoutPr(cwd: string, repo: string): Promise<string | null> {
+  const branchResult = await run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd });
+  const branch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+  if (branch) {
+    const upstream = (await mustRun("git", [
+      "for-each-ref", "--format=%(upstream:remoteref)", `refs/heads/${branch}`,
+    ], { cwd })).trim().replace(/^refs\/heads\//, "");
+    // The tracking branch remains useful while local commits are not pushed yet.
+    for (const candidate of new Set([upstream, branch].filter(Boolean))) {
+      const matches: { number: number }[] = JSON.parse(await mustRun("gh", [
+        "pr", "list", "--head", candidate, "--state", "open", "--limit", "2",
+        "--json", "number", "-R", repo,
+      ], { cwd }));
+      if (matches.length > 1) return null;
+      if (matches.length === 1) return String(matches[0].number);
+    }
+  }
+
+  // A push such as HEAD:existing-pr may leave no tracking branch. GitHub's
+  // commit association also includes ancestor commits and closed PRs, so only
+  // accept one open PR whose current head is exactly this checkout's HEAD.
+  const head = (await mustRun("git", ["rev-parse", "HEAD"], { cwd })).trim();
+  const pages = JSON.parse(await mustRun("gh", [
+    "api", `repos/${repo}/commits/${head}/pulls`, "--paginate", "--slurp",
+  ], { cwd }));
+  const matches: { number: number; state: string; head: { sha: string }; base: { repo: { full_name: string } } }[] = pages.flat();
+  const numbers = new Set(matches.filter(pr =>
+    pr.state === "open" && pr.head.sha === head
+    && pr.base.repo.full_name.toLowerCase() === repo.toLowerCase(),
+  ).map(pr => String(pr.number)));
+  return numbers.size === 1 ? [...numbers][0] : null;
+}
+
 /**
  * Non-interactive target for the threads pane: env first, then the
- * checked-out branch's open PR; null when there is no sensible target.
+ * checkout's open PR; null when there is no unique target.
  */
 async function resolveTargetQuiet(cwd: string): Promise<{ repo: string; pr: string } | null> {
   const envPr = process.env.GH_PR_NUMBER?.trim();
@@ -224,8 +259,8 @@ async function resolveTargetQuiet(cwd: string): Promise<{ repo: string; pr: stri
     return /^\d+$/.test(envPr) ? { repo, pr: envPr } : null;
   }
   try {
-    const pr = (await mustRun("gh", ["pr", "view", "--json", "number", "--jq", ".number", "-R", repo], { cwd })).trim();
-    return { repo, pr };
+    const pr = await resolveCheckoutPr(cwd, repo);
+    return pr ? { repo, pr } : null;
   } catch {
     return null;
   }
@@ -263,14 +298,14 @@ async function resolveTargetPr(ctx: ExtensionCommandContext, repo: string): Prom
     return null;
   }
   try {
-    return await ghPrJson(["pr", "view"], ctx.cwd, repo);
+    const pr = await resolveCheckoutPr(ctx.cwd, repo);
+    if (pr) return await ghPrJson(["pr", "view", pr], ctx.cwd, repo);
   } catch {
-    ctx.notify(
-      "gh-review: no open PR for the checked-out branch — notes can only be submitted to a PR. Open one first (gh pr create).",
-      "warning",
-    );
+    ctx.notify("gh-review: PR lookup failed; check gh authentication and repository access", "error");
     return null;
   }
+  ctx.notify("gh-review: no unique open PR for this checkout; set GH_PR_NUMBER and GH_PR_REPO explicitly", "warning");
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -297,15 +332,17 @@ type ThreadsState = {
   repo?: string;
   pr?: TargetPr;
   threads: Thread[];
-  /** Comments dropped because they sit on outdated diff positions. */
-  skippedOutdated: number;
+  /** Discussions retained for reading after their diff positions become outdated. */
+  outdatedThreads: number;
   /** Thread root id last clicked or key-navigated to; the reply command targets it. */
   activeThreadId: number | null;
   /** True while the `threads` keyboard mode owns j/k navigation. */
   modeActive: boolean;
+  /** Display preference only; fetched comment bodies always retain their source. */
+  renderMarkdown: boolean;
 };
 
-let snapshot: ThreadsState = { phase: "idle", threads: [], skippedOutdated: 0, activeThreadId: null, modeActive: false };
+let snapshot: ThreadsState = { phase: "idle", threads: [], outdatedThreads: 0, activeThreadId: null, modeActive: false, renderMarkdown: true };
 const listeners = new Set<() => void>();
 
 function setThreadsState(update: Partial<ThreadsState>) {
@@ -323,15 +360,14 @@ function useThreadsSnapshot(): ThreadsState {
   );
 }
 
-function groupThreads(comments: GhComment[]): { threads: Thread[]; skippedOutdated: number } {
-  const usable = comments.filter((c) => typeof c.line === "number");
-  const byId = new Map(usable.map((c) => [c.id, c]));
-  const roots = usable.filter((c) => !c.in_reply_to_id || !byId.has(c.in_reply_to_id));
+function groupThreads(comments: GhComment[]): { threads: Thread[]; outdatedThreads: number } {
+  const byId = new Map(comments.map((c) => [c.id, c]));
+  const roots = comments.filter((c) => !c.in_reply_to_id || !byId.has(c.in_reply_to_id));
   const threads: Thread[] = roots.map((root) => ({ root, replies: [] }));
   const threadOf = new Map<number, Thread>();
   for (const t of threads) threadOf.set(t.root.id, t);
   const byTime = (a: GhComment, b: GhComment) => a.created_at.localeCompare(b.created_at);
-  for (const c of usable.filter((c) => c.in_reply_to_id && byId.has(c.in_reply_to_id)).sort(byTime)) {
+  for (const c of comments.filter((c) => c.in_reply_to_id && byId.has(c.in_reply_to_id)).sort(byTime)) {
     // Walk up: a reply's in_reply_to_id may point at another reply.
     let cur: GhComment = c;
     while (cur.in_reply_to_id && byId.get(cur.in_reply_to_id)) {
@@ -345,7 +381,7 @@ function groupThreads(comments: GhComment[]): { threads: Thread[]; skippedOutdat
     }
   }
   threads.sort((a, b) => a.root.created_at.localeCompare(b.root.created_at));
-  return { threads, skippedOutdated: comments.length - usable.length };
+  return { threads, outdatedThreads: roots.filter(c => typeof c.line !== "number").length };
 }
 
 /** Move the active thread. No-op unless threads are loaded; clamps at the ends. */
@@ -364,7 +400,7 @@ async function fetchThreads(cwd: string, notify?: (message: string) => void): Pr
   setThreadsState({ phase: "loading", activeThreadId: null });
   const target = await resolveTargetQuiet(cwd);
   if (!target) {
-    setThreadsState({ phase: "no-pr", threads: [], skippedOutdated: 0 });
+    setThreadsState({ phase: "no-pr", threads: [], outdatedThreads: 0 });
     return;
   }
   try {
@@ -376,8 +412,8 @@ async function fetchThreads(cwd: string, notify?: (message: string) => void): Pr
     // not a flat list — flatten before grouping or every comment is dropped.
     const parsed = JSON.parse(commentsOut);
     const comments = (Array.isArray(parsed) && parsed.every(Array.isArray) ? parsed.flat() : parsed) as GhComment[];
-    const { threads, skippedOutdated } = groupThreads(comments);
-    setThreadsState({ phase: "ready", repo: target.repo, pr, threads, skippedOutdated });
+    const { threads, outdatedThreads } = groupThreads(comments);
+    setThreadsState({ phase: "ready", repo: target.repo, pr, threads, outdatedThreads });
     if (threads.length > 0) {
       notify?.(`PR #${pr.number}: ${threads.length} review thread${threads.length === 1 ? "" : "s"} — press T`);
     }
@@ -390,47 +426,38 @@ async function fetchThreads(cwd: string, notify?: (message: string) => void): Pr
 /* Threads pane component                                              */
 /* ------------------------------------------------------------------ */
 
-function wrapText(text: string, width: number): string[] {
-  const out: string[] = [];
-  for (const rawLine of text.split("\n")) {
-    const words = rawLine.split(/\s+/).filter(Boolean);
-    let cur = "";
-    for (const w of words) {
-      if (!cur) cur = w;
-      else if (`${cur} ${w}`.length <= width) cur += ` ${w}`;
-      else {
-        out.push(cur);
-        cur = w;
-      }
-    }
-    out.push(cur);
-  }
-  return out.length > 0 ? out : [""];
-}
-
 function CommentRows({
   comment,
-  indent,
   width,
   theme,
+  background,
   maxLines,
+  renderMarkdown,
+  syntaxStyle,
 }: {
   comment: GhComment;
-  indent: string;
   width: number;
   theme: ExtensionPaneProps["theme"];
+  background: string;
   maxLines: number;
+  renderMarkdown: boolean;
+  syntaxStyle: SyntaxStyle;
 }): ReactNode {
   const author = `@${comment.user?.login ?? "ghost"}`;
-  const bodyWidth = Math.max(width - indent.length - 1, 10);
-  const lines = wrapText(comment.body, bodyWidth);
-  const clipped = lines.length > maxLines;
+  const bodyWidth = Math.max(width, 10);
+  const markdown = useMemo(() => renderMarkdown ? renderCommentMarkdown(comment.body) : "", [comment.body, renderMarkdown]);
   return (
     <>
-      <text content={`${indent}${author}`} style={{ fg: theme.accent, bg: theme.panel }} />
-      {(clipped ? [...lines.slice(0, maxLines), "…"] : lines).map((line, i) => (
-        <text key={i} content={`${indent}${line}`} style={{ fg: theme.muted, bg: theme.panel }} />
-      ))}
+      <text content={author} attributes={TextAttributes.BOLD} style={{ fg: theme.text, bg: background }} />
+      <box marginTop={1} width={bodyWidth} maxHeight={Number.isFinite(maxLines) ? maxLines : undefined} overflow="hidden" flexShrink={0}>
+        {renderMarkdown ? (
+          <markdown content={markdown} syntaxStyle={syntaxStyle} fg={theme.text} bg={background}
+            conceal={true} concealCode={true} streaming={false} width="100%"
+            tableOptions={{ style: "columns", widthMode: "full", wrapMode: "word" }} />
+        ) : (
+          <text content={comment.body} wrapMode="word" width="100%" style={{ fg: theme.text, bg: background }} />
+        )}
+      </box>
     </>
   );
 }
@@ -438,6 +465,16 @@ function CommentRows({
 function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): ReactNode {
   const state = useThreadsSnapshot();
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const syntaxStyle = useMemo(() => SyntaxStyle.fromStyles({
+    default: { fg: theme.text },
+    "markup.heading": { fg: theme.accent, bold: true },
+    "markup.strong": { bold: true },
+    "markup.italic": { italic: true },
+    "markup.strikethrough": { dim: true },
+    "markup.link": { fg: theme.accent, underline: true },
+    "markup.raw": { fg: theme.text },
+  }), [theme.text, theme.accent]);
+  useEffect(() => () => syntaxStyle.destroy(), [syntaxStyle]);
 
   const reveal = (thread: Thread) => {
     const file = files.find((f) => f.path === thread.root.path);
@@ -485,7 +522,7 @@ function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): Re
         <>
           <text
             content={` PR #${state.pr!.number} · ${state.threads.length} thread${state.threads.length === 1 ? "" : "s"}${
-              state.skippedOutdated > 0 ? ` (${state.skippedOutdated} outdated hidden)` : ""
+              state.outdatedThreads > 0 ? ` (${state.outdatedThreads} outdated)` : ""
             }`}
             style={{ fg: theme.muted, bg: theme.panel }}
           />
@@ -493,21 +530,36 @@ function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): Re
             const active = thread.root.id === state.activeThreadId;
             const rowBg = active ? theme.selectedHunk : theme.panel;
             return (
-              <box key={thread.root.id} id={`thread-${thread.root.id}`} style={{ flexDirection: "column", backgroundColor: rowBg }}>
+              <box key={thread.root.id} id={`thread-${thread.root.id}`} marginTop={1} paddingBottom={1}
+                border={["top"]} borderColor={active ? theme.accent : theme.border}
+                style={{ flexDirection: "column", backgroundColor: theme.panel }}>
                 <text
-                  content={` ${thread.root.path}:${thread.root.line}`}
-                  style={{ fg: theme.text, bg: rowBg }}
+                  content={` ${thread.root.path}:${thread.root.line ?? thread.root.original_line ?? "?"}${
+                    typeof thread.root.line !== "number" ? " (outdated)" : ""
+                  }`}
+                  attributes={active ? TextAttributes.BOLD : undefined}
+                  style={{ fg: active ? theme.accent : theme.muted, bg: rowBg }}
                   onMouseDown={() => navigateTo(thread)}
                 />
-                <box onMouseDown={() => navigateTo(thread)}>
-                  <CommentRows comment={thread.root} indent="  " width={width} theme={theme} maxLines={4} />
+                <box marginTop={1} marginLeft={2} marginRight={1} onMouseDown={() => navigateTo(thread)}>
+                  <CommentRows comment={thread.root} width={width - 3} theme={theme} background={theme.panel}
+                    maxLines={active ? Infinity : 4} renderMarkdown={state.renderMarkdown} syntaxStyle={syntaxStyle} />
                 </box>
-                {thread.replies.map((reply) => (
-                  <box key={reply.id} onMouseDown={() => navigateTo(thread)}>
-                    <CommentRows comment={reply} indent="   ↳ " width={width} theme={theme} maxLines={2} />
+                {thread.replies.length > 0 ? (
+                  <box marginTop={1} marginLeft={2} marginRight={1} paddingLeft={1}
+                    border={["left"]} borderColor={active ? theme.accentMuted : theme.border}
+                    style={{ flexDirection: "column", backgroundColor: theme.panelAlt }}>
+                    <text content={`${thread.replies.length} ${thread.replies.length === 1 ? "reply" : "replies"}`}
+                      style={{ fg: theme.muted, bg: theme.panelAlt }} />
+                    {thread.replies.map((reply, index) => (
+                      <box key={reply.id} marginTop={1} onMouseDown={() => navigateTo(thread)}>
+                        {index > 0 ? <box border={["top"]} borderColor={theme.border} height={1} marginBottom={1} /> : null}
+                        <CommentRows comment={reply} width={width - 5} theme={theme} background={theme.panelAlt}
+                          maxLines={active ? Infinity : 2} renderMarkdown={state.renderMarkdown} syntaxStyle={syntaxStyle} />
+                      </box>
+                    ))}
                   </box>
-                ))}
-                <text content="" style={{ bg: rowBg }} />
+                ) : null}
               </box>
             );
           })}
@@ -534,7 +586,7 @@ function PrThreadsPane({ files, width, theme, actions }: ExtensionPaneProps): Re
       horizontalScrollbarOptions={{ visible: false }}
     >
       <box style={{ width: "100%", flexDirection: "column", backgroundColor: theme.panel }}>
-        <text content=" PR threads" style={{ fg: theme.accent, bg: theme.panel }} />
+        <text content={` PR threads · ${state.renderMarkdown ? "Markdown" : "Raw"}`} style={{ fg: theme.accent, bg: theme.panel }} />
         {state.modeActive ? (
           <text content=" j/k move · enter/esc back to diff" style={{ fg: theme.accentMuted, bg: theme.panel }} />
         ) : null}
@@ -655,6 +707,7 @@ async function submitReview(ctx: ExtensionCommandContext, collected: Map<string,
 /* ------------------------------------------------------------------ */
 
 export default function (hunk: HunkExtensionAPI) {
+  setThreadsState({ renderMarkdown: hunk.config.render_markdown !== false });
   // The e key needs $EDITOR; resolve it once, before any review starts.
   const configuredEditor =
     typeof hunk.config.editor === "string" && hunk.config.editor.trim() ? hunk.config.editor.trim() : null;
@@ -739,13 +792,15 @@ export default function (hunk: HunkExtensionAPI) {
     onExit: () => setThreadsState({ modeActive: false }),
   });
 
-  hunk.registerCommand({ id: "threads", title: "PR threads pane + keyboard mode", key: "T" }, (ctx) => {
+  hunk.registerCommand({ id: "threads", title: "PR threads pane + keyboard mode", key: "T" }, async (ctx) => {
     const willOpen = !ctx.panes.isOpen("threads");
     ctx.panes.toggle("threads");
     if (!willOpen) {
       if (ctx.keyboardModes.isActive("threads")) ctx.keyboardModes.exitMode();
       return;
     }
+    // A push can create the PR association without changing the watched diff.
+    await fetchThreads(ctx.cwd);
     if (snapshot.phase === "ready" && snapshot.threads.length > 0) {
       if (snapshot.activeThreadId == null) setThreadsState({ activeThreadId: snapshot.threads[0].root.id });
       ctx.keyboardModes.enterMode("threads");
@@ -759,6 +814,11 @@ export default function (hunk: HunkExtensionAPI) {
   hunk.registerCommand({ id: "refresh-threads", title: "Refresh PR threads" }, async (ctx) => {
     await fetchThreads(ctx.cwd);
     ctx.notify(snapshot.phase === "ready" ? "PR threads refreshed" : "PR threads unavailable for this review", snapshot.phase === "ready" ? "info" : "warning");
+  });
+
+  hunk.registerCommand({ id: "toggle-markdown", title: "Toggle PR comment Markdown rendering", key: "alt+m" }, (ctx) => {
+    setThreadsState({ renderMarkdown: !snapshot.renderMarkdown });
+    ctx.notify(`PR comments: ${snapshot.renderMarkdown ? "Markdown" : "raw text"}`);
   });
 
   hunk.registerCommand({ id: "reply", title: "Reply to selected PR thread", key: "R" }, async (ctx) => {
